@@ -2,9 +2,9 @@ use std::{collections::HashMap, fmt::Display, str::FromStr};
 
 use nom::{
     branch::alt,
-    bytes::complete::{escaped, tag, tag_no_case, take_while, take_while1},
-    character::complete::{alpha1, alphanumeric1, digit0, digit1, none_of},
-    combinator::{all_consuming, cut, map, opt, recognize},
+    bytes::complete::{escaped, tag, tag_no_case, take_while, take_while1, take_until, is_not},
+    character::complete::{alpha1, alphanumeric1, digit0, digit1, none_of, char},
+    combinator::{all_consuming, cut, map, opt, recognize, value},
     error::Error,
     multi::{many0, many1},
     sequence::{delimited, pair, preceded, terminated, tuple},
@@ -394,6 +394,28 @@ fn rel_type(input: &str) -> IResult<&str, String> {
             ))),
         ),
         String::from,
+    )(input)
+}
+
+fn comment(input: &str) -> IResult<&str, ()> {
+    alt((one_line_comment, block_comment))(input)
+}
+
+fn one_line_comment(input: &str) -> IResult<&str, ()> {
+    value(
+        (),
+        pair(char('%'), is_not("\n\r"))
+    )(input)
+}
+
+pub fn block_comment(input: &str) -> IResult<&str, ()> {
+    value(
+        (),
+        tuple((
+            tag("(*"),
+            take_until("*)"),
+            tag("*)")
+        ))
     )(input)
 }
 
