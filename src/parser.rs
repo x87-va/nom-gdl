@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt, str::FromStr};
 use nom::{
     branch::alt,
     bytes::complete::{escaped, tag, take_while, take_while1, take_until, is_not},
-    character::complete::{alpha1, alphanumeric1, char, digit0, digit1, none_of},
+    character::complete::{alpha1, alphanumeric1, char, digit0, digit1, none_of, multispace0},
     combinator::{all_consuming, cut, map, opt, recognize, value},
     error::{context, Error},
     multi::{many0, many1, separated_list0},
@@ -451,17 +451,17 @@ fn comment(input: &str) -> IResult<&str, ()> {
 fn one_line_comment(input: &str) -> IResult<&str, ()> {
     value(
         (),
-        pair(char('%'), is_not("\n\r"))
+        pair(tag("//"), is_not("\n\r"))
     )(input)
 }
 
-pub fn block_comment(input: &str) -> IResult<&str, ()> {
+fn block_comment(input: &str) -> IResult<&str, ()> {
     value(
         (),
         tuple((
-            tag("(*"),
-            take_until("*)"),
-            tag("*)")
+            tag("/*"),
+            take_until("*/"),
+            tag("*/")
         ))
     )(input)
 }
@@ -531,7 +531,14 @@ pub(crate) fn path(input: &str) -> IResult<&str, Path> {
 
 pub(crate) fn graph(input: &str) -> IResult<&str, Graph> {
     map(
-        many1(terminated(preceded(sp, path), preceded(sp, opt(tag(","))))),
+        many1(
+            // terminated(preceded(sp, path), preceded(sp, opt(tag(","))))
+            delimited(
+                    delimited(multispace0, opt(one_line_comment), multispace0),
+                    path,
+                    preceded(multispace0, opt(tag(",")))
+            )
+        ),
         Graph::new,
     )(input)
 }
