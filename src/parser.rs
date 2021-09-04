@@ -532,10 +532,9 @@ pub(crate) fn path(input: &str) -> IResult<&str, Path> {
 pub(crate) fn graph(input: &str) -> IResult<&str, Graph> {
     map(
         many1(
-            // terminated(preceded(sp, path), preceded(sp, opt(tag(","))))
             delimited(
-                    delimited(multispace0, opt(one_line_comment), multispace0),
-                    path,
+                    many0(preceded(multispace0, one_line_comment)),
+                    preceded(multispace0, path),
                     preceded(multispace0, opt(tag(",")))
             )
         ),
