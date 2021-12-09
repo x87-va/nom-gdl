@@ -211,6 +211,12 @@ impl fmt::Display for List {
     }
 }
 
+impl From<&List> for Vec<String> {
+    fn from(list: &List) -> Vec<String> {
+        list.0.iter().map(|value| value.to_string()).collect()
+    }
+}
+
 impl From<f64> for CypherValue {
     fn from(value: f64) -> Self {
         CypherValue::Float(value)
