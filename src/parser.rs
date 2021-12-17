@@ -386,7 +386,7 @@ fn list_literal(input: &str) -> IResult<&str, CypherValue> {
 }
 
 fn map_literal(input: &str) -> IResult<&str, CypherValue> {
-    map(properties, |value| CypherValue::Map(value))(input)
+    map(properties, CypherValue::Map)(input)
 }
 
 fn literal(input: &str) -> IResult<&str, CypherValue> {
