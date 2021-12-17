@@ -539,6 +539,65 @@ pub(crate) fn relationship(input: &str) -> IResult<&str, Relationship> {
     ))(input)
 }
 
+#[derive(Debug, PartialEq)]
+pub(crate) struct Function {
+    pub(crate) name: String,
+    pub(crate) arguments: Vec<CypherValue>,
+}
+
+impl Function {
+    fn new(name: String, arguments: Vec<CypherValue>) -> Function {
+        Function { name, arguments }
+    }
+}
+
+impl From<(String, Vec<CypherValue>)> for Function {
+    fn from((name, arguments): (String, Vec<CypherValue>)) -> Self {
+        Function { name, arguments }
+    }
+}
+
+impl FromStr for Function {
+    type Err = Error<String>;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match all_consuming(function)(s).finish() {
+            Ok((_remaining, function)) => Ok(function),
+            Err(Error { input, code }) => Err(Error {
+                input: input.to_string(),
+                code,
+            }),
+        }
+    }
+}
+
+fn function(input: &str) -> IResult<&str, Function> {
+    map(
+        tuple((
+            function_name,
+            delimited(tag("("), function_arguments, tag(")")),
+        )),
+        Function::from,
+    )(input)
+}
+
+fn function_name(input: &str) -> IResult<&str, String> {
+    map(
+        preceded(
+            sp,
+            recognize(pair(
+                alt((alpha1, tag("_"))),
+                many0(alt((alphanumeric1, tag("_")))),
+            )),
+        ),
+        String::from,
+    )(input)
+}
+
+fn function_arguments(input: &str) -> IResult<&str, Vec<CypherValue>> {
+    separated_list0(preceded(sp, char(',')), literal)(input)
+}
+
 pub(crate) fn path(input: &str) -> IResult<&str, Path> {
     map(pair(node, many0(pair(relationship, cut(node)))), Path::from)(input)
 }
@@ -1019,5 +1078,11 @@ mod tests {
                 elements: vec![]
             }]))
         );
+    }
+
+    #[test_case("timestamp()", Function::new("timestamp".to_string(), Vec::new()))]
+    #[test_case("func('var', true, 1.0, 4)", Function::new("func".to_string(), vec![CypherValue::from("var"), CypherValue::from(true), CypherValue::from(1.0), CypherValue::from(4)]))]
+    fn function_test(input: &str, expected: Function) {
+        assert_eq!(input.parse(), Ok(expected));
     }
 }
