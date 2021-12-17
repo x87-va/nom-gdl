@@ -75,6 +75,7 @@ pub(crate) struct Relationship {
     pub(crate) direction: Direction,
     pub(crate) properties: HashMap<String, CypherValue>,
 }
+
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub(crate) enum Direction {
     Outgoing,
@@ -193,6 +194,7 @@ pub enum CypherValue {
     String(String),
     Boolean(bool),
     List(Vec<CypherValue>),
+    Map(HashMap<String, CypherValue>),
 }
 
 impl From<f64> for CypherValue {
@@ -254,6 +256,7 @@ impl fmt::Display for CypherValue {
             CypherValue::String(string) => f.pad(string),
             CypherValue::Boolean(boolean) => write!(f, "{}", boolean),
             CypherValue::List(list) => write_list(f, list),
+            CypherValue::Map(value) => write_map(f, value),
         }
     }
 }
@@ -266,6 +269,27 @@ fn write_list(formatter: &mut fmt::Formatter, list: &[CypherValue]) -> fmt::Resu
         .join(", ");
 
     write!(formatter, "[{}]", values)
+}
+
+fn write_map(formatter: &mut fmt::Formatter, map: &HashMap<String, CypherValue>) -> fmt::Result {
+    let values = map
+        .iter()
+        .map(|(key, value)| format!("{}:{}", key, value.to_string()))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    write!(formatter, "{{{}}}", values)
+}
+
+impl<T: Into<CypherValue>> From<HashMap<String, T>> for CypherValue {
+    fn from(value: HashMap<String, T>) -> Self {
+        let map = value
+            .into_iter()
+            .map(|(key, value)| (key, value.into()))
+            .collect();
+
+        CypherValue::Map(map)
+    }
 }
 
 fn is_uppercase_alphabetic(c: char) -> bool {
@@ -355,6 +379,10 @@ fn list_literal(input: &str) -> IResult<&str, CypherValue> {
     )(input)
 }
 
+fn map_literal(input: &str) -> IResult<&str, CypherValue> {
+    map(properties, CypherValue::Map)(input)
+}
+
 fn literal(input: &str) -> IResult<&str, CypherValue> {
     preceded(
         sp,
@@ -364,6 +392,7 @@ fn literal(input: &str) -> IResult<&str, CypherValue> {
             string_literal,
             boolean_literal,
             list_literal,
+            map_literal,
         )),
     )(input)
 }
@@ -513,6 +542,7 @@ pub(crate) fn graph(input: &str) -> IResult<&str, Graph> {
 mod tests {
     use super::*;
 
+    use maplit::hashmap;
     use pretty_assertions::assert_eq as pretty_assert_eq;
     use test_case::test_case;
 
@@ -646,6 +676,7 @@ mod tests {
     #[test_case("[1.0, 2.5, .1]",  CypherValue::from(vec![1.0, 2.5, 0.1]) ; "list: [1.0, 2.5, 0.1]")]
     #[test_case("[true, false]",   CypherValue::from(vec![true, false])   ; "list: [true, false]")]
     #[test_case(r#"["ab", "cd"]"#, CypherValue::from(vec!["ab", "cd"])    ; "list: [\"ab\", \"cd\"]")]
+    #[test_case("{key: 1}", CypherValue::from(hashmap!["key".to_string() => 1]); "map: {\"key\", 1}")]
     fn cypher_value(input: &str, expected: CypherValue) {
         assert_eq!(input.parse(), Ok(expected))
     }
@@ -656,15 +687,40 @@ mod tests {
         assert_eq!(CypherValue::from(13.37), CypherValue::from(13.37));
         assert_eq!(CypherValue::from("foobar"), CypherValue::from("foobar"));
         assert_eq!(CypherValue::from(true), CypherValue::from(true));
+        assert_eq!(
+            CypherValue::from(vec![1, -2, 3]),
+            CypherValue::List(vec![
+                CypherValue::Integer(1),
+                CypherValue::Integer(-2),
+                CypherValue::Integer(3)
+            ])
+        );
+        assert_eq!(
+            CypherValue::from(hashmap!["key".to_string() => "value".to_string()]),
+            CypherValue::Map(hashmap!["key".to_string() => CypherValue::from("value")])
+        );
     }
 
     #[test]
     fn cypher_value_display() {
-        assert_eq!("42", format!("{}", CypherValue::from(42)));
-        assert_eq!("13.37", format!("{}", CypherValue::from(13.37)));
-        assert_eq!("foobar", format!("{}", CypherValue::from("foobar")));
-        assert_eq!("00foobar", format!("{:0>8}", CypherValue::from("foobar")));
-        assert_eq!("true", format!("{}", CypherValue::from(true)));
+        assert_eq!("42", format!("{}", CypherValue::Integer(42)));
+        assert_eq!("13.37", format!("{}", CypherValue::Float(13.37)));
+        assert_eq!(
+            "foobar",
+            format!("{}", CypherValue::String("foobar".to_string()))
+        );
+        assert_eq!(
+            "00foobar",
+            format!("{:0>8}", CypherValue::String("foobar".to_string()))
+        );
+        assert_eq!("true", format!("{}", CypherValue::Boolean(true)));
+        assert_eq!(
+            "[1, 2]",
+            format!(
+                "{}",
+                CypherValue::List(vec![CypherValue::Integer(1), CypherValue::Integer(2)])
+            )
+        );
     }
 
     #[test]
@@ -760,6 +816,7 @@ mod tests {
     #[test_case("( n0:A:B )",           Node::with_variable_and_labels("n0", vec!["A", "B"]); "n0:A:B with space")]
     #[test_case("(n0 { foo: 42 })",     Node::from("n0", vec![], vec![("foo", CypherValue::from(42))]))]
     #[test_case("(n0:A:B { foo: 42 })", Node::from("n0", vec!["A", "B"], vec![("foo", CypherValue::from(42))]))]
+    #[test_case("(n:A { foo: 42, env: { var: 1 } })", Node::from("n", vec!["A"], vec![("foo", CypherValue::Integer(42)), ("env", CypherValue::Map(hashmap!["var".to_string() => CypherValue::Integer(1)]))]))]
     fn node_test(input: &str, expected: Node) {
         assert_eq!(input.parse(), Ok(expected));
     }
