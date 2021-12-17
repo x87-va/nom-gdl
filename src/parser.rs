@@ -192,29 +192,7 @@ pub enum CypherValue {
     Integer(i64),
     String(String),
     Boolean(bool),
-    List(List),
-}
-
-#[derive(Debug, PartialEq)]
-pub struct List(Vec<CypherValue>);
-
-impl fmt::Display for List {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        let values = self
-            .0
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        write!(formatter, "[{}]", values)
-    }
-}
-
-impl From<&List> for Vec<String> {
-    fn from(list: &List) -> Vec<String> {
-        list.0.iter().map(|value| value.to_string()).collect()
-    }
+    List(Vec<CypherValue>),
 }
 
 impl From<f64> for CypherValue {
@@ -264,7 +242,7 @@ impl FromStr for CypherValue {
 impl<T: Into<CypherValue>> From<Vec<T>> for CypherValue {
     fn from(value: Vec<T>) -> Self {
         let vector = value.into_iter().map(|entry| entry.into()).collect();
-        CypherValue::List(List(vector))
+        CypherValue::List(vector)
     }
 }
 
@@ -275,9 +253,19 @@ impl fmt::Display for CypherValue {
             CypherValue::Integer(integer) => write!(f, "{}", integer),
             CypherValue::String(string) => f.pad(string),
             CypherValue::Boolean(boolean) => write!(f, "{}", boolean),
-            CypherValue::List(list) => write!(f, "{}", list),
+            CypherValue::List(list) => write_list(f, list),
         }
     }
+}
+
+fn write_list(formatter: &mut fmt::Formatter, list: &[CypherValue]) -> fmt::Result {
+    let values = list
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    write!(formatter, "[{}]", values)
 }
 
 fn is_uppercase_alphabetic(c: char) -> bool {
@@ -359,7 +347,7 @@ fn list_literal(input: &str) -> IResult<&str, CypherValue> {
             cut(terminated(
                 map(
                     separated_list0(preceded(sp, char(',')), literal),
-                    |vector| CypherValue::List(List(vector)),
+                    CypherValue::List,
                 ),
                 preceded(sp, char(']')),
             )),
@@ -375,12 +363,13 @@ fn literal(input: &str) -> IResult<&str, CypherValue> {
             integer_literal,
             string_literal,
             boolean_literal,
+            list_literal,
         )),
     )(input)
 }
 
 fn cypher_value(input: &str) -> IResult<&str, CypherValue> {
-    preceded(sp, alt((literal, list_literal)))(input)
+    preceded(sp, literal)(input)
 }
 
 fn variable(input: &str) -> IResult<&str, String> {
@@ -523,6 +512,7 @@ pub(crate) fn graph(input: &str) -> IResult<&str, Graph> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use pretty_assertions::assert_eq as pretty_assert_eq;
     use test_case::test_case;
 
@@ -679,12 +669,12 @@ mod tests {
 
     #[test]
     fn list_display_test() {
-        let list = CypherValue::List(List(vec![
+        let list = CypherValue::List(vec![
             CypherValue::Float(13.37),
             CypherValue::Integer(42),
             CypherValue::Boolean(true),
             CypherValue::String(String::from("foobar")),
-        ]));
+        ]);
 
         assert_eq!(format!("{}", list), "[13.37, 42, true, foobar]");
     }
