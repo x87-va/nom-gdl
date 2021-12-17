@@ -2,9 +2,9 @@ use std::{collections::HashMap, fmt, str::FromStr};
 
 use nom::{
     branch::alt,
-    bytes::complete::{escaped, tag, take_while, take_while1},
-    character::complete::{alpha1, alphanumeric1, char, digit0, digit1, none_of},
-    combinator::{all_consuming, cut, map, opt, recognize},
+    bytes::complete::{escaped, is_not, tag, take_until, take_while, take_while1},
+    character::complete::{alpha1, alphanumeric1, char, digit0, digit1, multispace0, none_of},
+    combinator::{all_consuming, cut, map, opt, recognize, value},
     error::{context, Error},
     multi::{many0, many1, separated_list0},
     sequence::{delimited, pair, preceded, terminated, tuple},
@@ -468,6 +468,18 @@ fn rel_type(input: &str) -> IResult<&str, String> {
     )(input)
 }
 
+fn comment(input: &str) -> IResult<&str, ()> {
+    alt((one_line_comment, block_comment))(input)
+}
+
+fn one_line_comment(input: &str) -> IResult<&str, ()> {
+    value((), pair(tag("//"), is_not("\n\r")))(input)
+}
+
+fn block_comment(input: &str) -> IResult<&str, ()> {
+    value((), tuple((tag("/*"), take_until("*/"), tag("*/"))))(input)
+}
+
 type NodeBody = (
     Option<String>,                       // variable
     Vec<String>,                          // labels
@@ -533,7 +545,11 @@ pub(crate) fn path(input: &str) -> IResult<&str, Path> {
 
 pub(crate) fn graph(input: &str) -> IResult<&str, Graph> {
     map(
-        many1(terminated(preceded(sp, path), preceded(sp, opt(tag(","))))),
+        many1(delimited(
+            many0(preceded(multispace0, one_line_comment)),
+            preceded(multispace0, path),
+            preceded(multispace0, opt(tag(","))),
+        )),
         Graph::new,
     )(input)
 }
