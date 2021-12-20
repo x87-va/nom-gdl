@@ -14,7 +14,7 @@
 //! ## Quickstart example
 //!
 //! ```
-//! use gdl::{CypherValue, Graph};
+//! use gdl::{CypherValue, Expression, Graph};
 //! use std::rc::Rc;
 //!
 //! let gdl_string = "(alice:Person { name: 'Alice', age: 23 }),
@@ -27,8 +27,8 @@
 //! assert_eq!(graph.relationship_count(), 1);
 //!
 //! let alice = graph.get_node("alice").unwrap();
-//! assert_eq!(alice.property_value("age"), Some(&CypherValue::from(23)));
-//! assert_eq!(alice.property_value("name"), Some(&CypherValue::from("Alice")));
+//! assert_eq!(alice.property_value("age"), Some(&Expression::Literal(CypherValue::from(23))));
+//! assert_eq!(alice.property_value("name"), Some(&Expression::Literal(CypherValue::from("Alice"))));
 //!
 //! let relationship = graph.get_relationship("r").unwrap();
 //! assert_eq!(relationship.rel_type(), Some("KNOWS"));
@@ -135,7 +135,7 @@ pub use graph::Graph;
 pub use graph::Node;
 pub use graph::Relationship;
 
-pub use parser::CypherValue;
+pub use parser::{CypherValue, Expression};
 
 #[cfg(doctest)]
 mod tests {

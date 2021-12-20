@@ -1,14 +1,13 @@
-use std::{
-    collections::{hash_map::Entry, HashMap},
-    rc::Rc,
-    str::FromStr,
-};
+use std::collections::{hash_map::Entry, HashMap};
+use std::fs;
+use std::rc::Rc;
+use std::str::FromStr;
 
 use thiserror::Error;
 
 use crate::parser::{
-    CypherValue, Direction, Graph as ParseGraph, Node as ParseNode, Path as ParsePath,
-    Relationship as ParseRelationship,
+    list_expression, map_expression, CypherValue, Direction, Expression, FunctionCall,
+    Graph as ParseGraph, Node as ParseNode, Path as ParsePath, Relationship as ParseRelationship,
 };
 
 #[derive(Error, Debug, PartialEq)]
@@ -26,7 +25,7 @@ pub struct Node {
     id: usize,
     variable: Rc<String>,
     labels: Vec<Rc<String>>,
-    properties: HashMap<String, CypherValue>,
+    properties: HashMap<String, Expression>,
 }
 
 impl Node {
@@ -46,11 +45,11 @@ impl Node {
         self.properties.keys().map(|k| k.as_str())
     }
 
-    pub fn property_value(&self, key: &str) -> Option<&CypherValue> {
+    pub fn property_value(&self, key: &str) -> Option<&Expression> {
         self.properties.get(key)
     }
 
-    pub fn properties(&self) -> impl Iterator<Item = (&str, &CypherValue)> {
+    pub fn properties(&self) -> impl Iterator<Item = (&str, &Expression)> {
         self.properties.iter().map(|(k, v)| (k.as_str(), v))
     }
 }
@@ -62,7 +61,7 @@ pub struct Relationship {
     source: Rc<String>,
     target: Rc<String>,
     rel_type: Option<Rc<String>>,
-    properties: HashMap<String, CypherValue>,
+    properties: HashMap<String, Expression>,
 }
 
 impl Relationship {
@@ -90,11 +89,11 @@ impl Relationship {
         self.properties.keys().map(|k| k.as_str())
     }
 
-    pub fn property_value(&self, key: &str) -> Option<&CypherValue> {
+    pub fn property_value(&self, key: &str) -> Option<&Expression> {
         self.properties.get(key)
     }
 
-    pub fn properties(&self) -> impl Iterator<Item = (&str, &CypherValue)> {
+    pub fn properties(&self) -> impl Iterator<Item = (&str, &Expression)> {
         self.properties.iter().map(|(k, v)| (k.as_str(), v))
     }
 }
@@ -163,8 +162,7 @@ impl Graph {
     /// Example:
     ///
     /// ```
-    /// use gdl::Graph;
-    /// use gdl::CypherValue;
+    /// use gdl::{CypherValue, Expression, Graph};
     /// use std::rc::Rc;
     ///
     /// let graph = "(n0:A:B { foo: 42, bar: 1337 })".parse::<gdl::Graph>().unwrap();
@@ -173,7 +171,7 @@ impl Graph {
     ///
     /// assert_eq!(n0.variable(), String::from("n0"));
     /// assert_eq!(n0.labels().collect::<Vec<_>>(), vec!["A", "B"]);
-    /// assert_eq!(n0.property_value("foo").unwrap(), &CypherValue::from(42));
+    /// assert_eq!(n0.property_value("foo").unwrap(), &Expression::Literal(CypherValue::from(42)));
     /// ```
     pub fn get_node(&self, variable: &str) -> Option<&Node> {
         self.node_cache.get(variable)
@@ -184,8 +182,7 @@ impl Graph {
     /// Example:
     ///
     /// ```
-    /// use gdl::Graph;
-    /// use gdl::CypherValue;
+    /// use gdl::{CypherValue, Expression, Graph};
     /// use std::rc::Rc;
     ///
     /// let graph = "()-[r0:REL { foo: 42, bar: 13.37 }]->()".parse::<gdl::Graph>().unwrap();
@@ -194,7 +191,7 @@ impl Graph {
     ///
     /// assert_eq!(r0.variable(), String::from("r0"));
     /// assert_eq!(r0.rel_type(), Some("REL"));
-    /// assert_eq!(r0.property_value("bar").unwrap(), &CypherValue::from(13.37));
+    /// assert_eq!(r0.property_value("bar").unwrap(), &Expression::Literal(CypherValue::from(13.37)));
     /// ```
     pub fn get_relationship(&self, variable: &str) -> Option<&Relationship> {
         self.relationship_cache.get(variable)
@@ -243,8 +240,7 @@ impl FromStr for Graph {
     /// Example
     ///
     /// ```
-    /// use gdl::Graph;
-    /// use gdl::CypherValue;
+    /// use gdl::{CypherValue, Expression, Graph};
     /// use std::rc::Rc;
     ///
     /// let graph =
@@ -258,7 +254,7 @@ impl FromStr for Graph {
     ///
     /// let alice = graph.get_node("alice").unwrap();
     ///
-    /// assert_eq!(alice.property_value("age"), Some(&CypherValue::from(23)));
+    /// assert_eq!(alice.property_value("age"), Some(&Expression::Literal(CypherValue::Integer(23))));
     ///
     /// let relationship = graph.get_relationship("r").unwrap();
     /// assert_eq!(relationship.rel_type(), Some("KNOWS"));
@@ -309,7 +305,7 @@ impl Graph {
                     id: next_id,
                     variable,
                     labels,
-                    properties: parse_node.properties,
+                    properties: evaluate_expressions(parse_node.properties),
                 };
 
                 Ok(entry.insert(new_node))
@@ -355,7 +351,7 @@ impl Graph {
                     target: Rc::new(String::default()),
                     variable,
                     rel_type,
-                    properties: parse_relationship.properties,
+                    properties: evaluate_expressions(parse_relationship.properties),
                 };
 
                 Ok(entry.insert(new_relationship))
@@ -395,9 +391,75 @@ impl Graph {
     }
 }
 
+fn evaluate_expressions(expressions: HashMap<String, Expression>) -> HashMap<String, Expression> {
+    expressions
+        .into_iter()
+        .map(|(key, expression)| {
+            if let Expression::FunctionCall(call) = expression {
+                (key, call_function(call))
+            } else {
+                (key, expression)
+            }
+        })
+        .collect()
+}
+
+fn call_function(call: FunctionCall) -> Expression {
+    match call.name.as_str() {
+        "include_map" => {
+            if call.arguments.len() != 1 {
+                panic!("include_map(): wrong arguments count");
+            }
+
+            if let Expression::Literal(CypherValue::String(ref file_path)) = call.arguments[0] {
+                let content = fs::read_to_string(file_path).expect("Read included file");
+
+                parse_map(&content).expect("Parse Map")
+            } else {
+                panic!("include_map(): wrong argument type");
+            }
+        }
+        "include_list" => {
+            if call.arguments.len() != 1 {
+                panic!("include_list(): wrong arguments count");
+            }
+
+            if let Expression::Literal(CypherValue::String(ref file_path)) = call.arguments[0] {
+                let content = fs::read_to_string(file_path).expect("Read included file");
+
+                parse_list(&content).expect("Parse List")
+            } else {
+                panic!("include_list(): wrong argument type");
+            }
+        }
+        other => panic!("function {} is unsupported", other),
+    }
+}
+
+fn parse_map(input: &str) -> Result<Expression, GraphHandlerError> {
+    match map_expression(input) {
+        Ok((_, map)) => Ok(map),
+        Err(error) => Err(GraphHandlerError::Parser(nom::error::Error::new(
+            error.to_string(),
+            nom::error::ErrorKind::Fail,
+        ))),
+    }
+}
+
+fn parse_list(input: &str) -> Result<Expression, GraphHandlerError> {
+    match list_expression(input) {
+        Ok((_, list)) => Ok(list),
+        Err(error) => Err(GraphHandlerError::Parser(nom::error::Error::new(
+            error.to_string(),
+            nom::error::ErrorKind::Fail,
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maplit::hashmap;
     use nom::error::ErrorKind;
     use test_case::test_case;
 
@@ -405,7 +467,7 @@ mod tests {
         fn new(
             variable: &str,
             labels: Vec<impl Into<String>>,
-            properties: HashMap<impl Into<String>, CypherValue>,
+            properties: HashMap<impl Into<String>, Expression>,
         ) -> Self {
             Self {
                 variable: Rc::new(variable.to_string()),
@@ -423,7 +485,7 @@ mod tests {
     }
 
     impl Relationship {
-        fn new<T>(variable: T, rel_type: Option<&str>, properties: HashMap<T, CypherValue>) -> Self
+        fn new<T>(variable: T, rel_type: Option<&str>, properties: HashMap<T, Expression>) -> Self
         where
             T: Into<String>,
         {
@@ -439,11 +501,13 @@ mod tests {
         }
     }
 
-    #[test_case("()", Node::new("__v0", Vec::<String>::new(), HashMap::<String, CypherValue>::new()) ; "empty")]
-    #[test_case("(a)", Node::new("a", Vec::<String>::new(), HashMap::<String, CypherValue>::new()) ; "variable only")]
-    #[test_case("(:A)", Node::new("__v0", vec!["A"], HashMap::<String, CypherValue>::new()) ; "label only")]
-    #[test_case("(a:A)", Node::new("a", vec!["A"], HashMap::<String, CypherValue>::new()) ; "variable and label")]
-    #[test_case("(a:A { foo: 42, bar: 'foobar' })", Node::new("a", vec!["A"], vec![("foo", CypherValue::from(42)), ("bar", CypherValue::from("foobar"))].into_iter().collect::<HashMap<_,_>>()); "full")]
+    #[test_case("()", Node::new("__v0", Vec::<String>::new(), HashMap::<String, Expression>::new()) ; "empty")]
+    #[test_case("(a)", Node::new("a", Vec::<String>::new(), HashMap::<String, Expression>::new()) ; "variable only")]
+    #[test_case("(:A)", Node::new("__v0", vec!["A"], HashMap::<String, Expression>::new()) ; "label only")]
+    #[test_case("(a:A)", Node::new("a", vec!["A"], HashMap::<String, Expression>::new()) ; "variable and label")]
+    #[test_case("(a:A { foo: 42, bar: 'foobar' })", Node::new("a", vec!["A"], hashmap!["foo" => Expression::Literal(CypherValue::Integer(42)), "bar" => Expression::Literal(CypherValue::from("foobar"))]); "full")]
+    #[test_case(r#"(p:Process { name: "prog", env: include_map("testdata/env.cql") })"#, Node::new("p", vec!["Process"], hashmap!["name" => Expression::Literal(CypherValue::String("prog".to_string())), "env" => Expression::Map(hashmap!["LOG".to_string() => Expression::Literal(CypherValue::String("INFO".to_string()))])]) ; "include map")]
+    #[test_case(r#"(s:Service { name: "serv", ports: include_list("testdata/ports.cql") })"#, Node::new("s", vec!["Service"], hashmap!["name" => Expression::Literal(CypherValue::String("serv".to_string())), "ports" => Expression::List(vec![Expression::Literal(CypherValue::Integer(7000)), Expression::Literal(CypherValue::Integer(7050))])]) ; "include list")]
     fn convert_node(input: &str, expected: Node) {
         let parse_node = input.parse::<ParseNode>().unwrap();
         let mut graph_handler = Graph::default();
@@ -456,7 +520,7 @@ mod tests {
     #[test_case("-[r]->", Relationship::new("r", None, HashMap::default()) ; "variable only")]
     #[test_case("-[:R]->", Relationship::new("__r0", Some("R"), HashMap::default()) ; "rel type only")]
     #[test_case("-[r:R]->", Relationship::new("r", Some("R"), HashMap::default()) ; "variable and rel type")]
-    #[test_case("-[r:R { foo: 42 }]->", Relationship::new("r", Some("R"), std::iter::once(("foo", CypherValue::from(42))).collect::<HashMap<_,_>>()) ; "full")]
+    #[test_case("-[r:R { foo: 42 }]->", Relationship::new("r", Some("R"), hashmap!["foo" => Expression::Literal(CypherValue::Integer(42))]) ; "full")]
     fn convert_relationship(input: &str, expected: Relationship) {
         let parse_relationship = input.parse::<ParseRelationship>().unwrap();
         let mut graph_handler = Graph::default();
@@ -523,8 +587,11 @@ mod tests {
 
     #[test]
     fn node_api() {
-        let mut properties = HashMap::<String, CypherValue>::new();
-        properties.insert("foo".to_string(), CypherValue::from(42));
+        let mut properties = HashMap::<String, Expression>::new();
+        properties.insert(
+            "foo".to_string(),
+            Expression::Literal(CypherValue::from(42)),
+        );
 
         let n = Node {
             id: 42,
@@ -537,17 +604,20 @@ mod tests {
         assert_eq!(n.variable(), "n42");
         assert_eq!(n.labels().collect::<Vec<_>>(), vec!["A", "B"]);
         assert_eq!(n.property_keys().collect::<Vec<_>>(), vec!["foo"]);
-        assert_eq!(n.property_value("foo").unwrap(), &CypherValue::from(42));
+        assert_eq!(
+            n.property_value("foo").unwrap(),
+            &Expression::Literal(CypherValue::Integer(42))
+        );
         assert_eq!(
             n.properties().collect::<Vec<_>>(),
-            vec![("foo", &CypherValue::from(42))]
+            vec![("foo", &Expression::Literal(CypherValue::Integer(42)))]
         )
     }
 
     #[test]
     fn relationship_api() {
-        let mut properties = HashMap::<String, CypherValue>::new();
-        properties.insert("foo".into(), CypherValue::from(42));
+        let mut properties = HashMap::<String, Expression>::new();
+        properties.insert("foo".into(), Expression::Literal(CypherValue::from(42)));
 
         let r = Relationship {
             id: 42,
@@ -564,10 +634,13 @@ mod tests {
         assert_eq!(r.variable(), "r42");
         assert_eq!(r.rel_type(), Some("REL"));
         assert_eq!(r.property_keys().collect::<Vec<_>>(), vec!["foo"]);
-        assert_eq!(r.property_value("foo").unwrap(), &CypherValue::from(42));
+        assert_eq!(
+            r.property_value("foo").unwrap(),
+            &Expression::Literal(CypherValue::Integer(42))
+        );
         assert_eq!(
             r.properties().collect::<Vec<_>>(),
-            vec![("foo", &CypherValue::from(42))]
+            vec![("foo", &Expression::Literal(CypherValue::Integer(42)))]
         )
     }
 

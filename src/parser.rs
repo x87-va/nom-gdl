@@ -11,18 +11,94 @@ use nom::{
     Finish, IResult,
 };
 
+#[derive(Debug, PartialEq)]
+pub enum Expression {
+    Literal(CypherValue),
+    FunctionCall(FunctionCall),
+    Map(HashMap<String, Expression>),
+    List(Vec<Expression>),
+}
+
+impl From<CypherValue> for Expression {
+    fn from(value: CypherValue) -> Self {
+        Expression::Literal(value)
+    }
+}
+
+impl<T: Into<Expression>> From<Vec<T>> for Expression {
+    fn from(value: Vec<T>) -> Self {
+        let vector = value.into_iter().map(|entry| entry.into()).collect();
+        Expression::List(vector)
+    }
+}
+
+impl<T: Into<Expression>> From<HashMap<String, T>> for Expression {
+    fn from(value: HashMap<String, T>) -> Self {
+        let map = value
+            .into_iter()
+            .map(|(key, value)| (key, value.into()))
+            .collect();
+        Expression::Map(map)
+    }
+}
+
+impl fmt::Display for Expression {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Literal(value) => write!(f, "{}", value),
+            Self::FunctionCall(call) => write!(f, "{}", call),
+            Self::List(ref list) => write_list(f, list),
+            Self::Map(ref value) => write_map(f, value),
+        }
+    }
+}
+
+fn write_list(formatter: &mut fmt::Formatter, list: &[Expression]) -> fmt::Result {
+    let values = list
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    write!(formatter, "[{}]", values)
+}
+
+fn write_map(formatter: &mut fmt::Formatter, map: &HashMap<String, Expression>) -> fmt::Result {
+    let values = map
+        .iter()
+        .map(|(key, value)| format!("{}:{}", key, value.to_string()))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    write!(formatter, "{{{}}}", values)
+}
+
+impl FromStr for Expression {
+    type Err = Error<String>;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match all_consuming(expression)(s).finish() {
+            Ok((_remainder, value)) => Ok(value),
+            Err(Error { input, code }) => Err(Error {
+                input: input.to_string(),
+                code,
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Node {
     pub(crate) variable: Option<String>,
     pub(crate) labels: Vec<String>,
-    pub(crate) properties: HashMap<String, CypherValue>,
+    pub(crate) properties: HashMap<String, Expression>,
 }
 
 impl Node {
     pub fn new(
         variable: Option<String>,
         labels: Vec<String>,
-        properties: HashMap<String, CypherValue>,
+        properties: HashMap<String, Expression>,
     ) -> Self {
         Self {
             variable,
@@ -36,14 +112,14 @@ impl
     From<(
         Option<String>,
         Vec<String>,
-        Option<HashMap<String, CypherValue>>,
+        Option<HashMap<String, Expression>>,
     )> for Node
 {
     fn from(
         (variable, labels, properties): (
             Option<String>,
             Vec<String>,
-            Option<HashMap<String, CypherValue>>,
+            Option<HashMap<String, Expression>>,
         ),
     ) -> Self {
         Node {
@@ -73,7 +149,7 @@ pub(crate) struct Relationship {
     pub(crate) variable: Option<String>,
     pub(crate) rel_type: Option<String>,
     pub(crate) direction: Direction,
-    pub(crate) properties: HashMap<String, CypherValue>,
+    pub(crate) properties: HashMap<String, Expression>,
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -92,7 +168,7 @@ impl Relationship {
     fn outgoing(
         variable: Option<String>,
         rel_type: Option<String>,
-        properties: HashMap<String, CypherValue>,
+        properties: HashMap<String, Expression>,
     ) -> Self {
         Relationship {
             variable,
@@ -105,7 +181,7 @@ impl Relationship {
     fn incoming(
         variable: Option<String>,
         rel_type: Option<String>,
-        properties: HashMap<String, CypherValue>,
+        properties: HashMap<String, Expression>,
     ) -> Self {
         Relationship {
             variable,
@@ -193,8 +269,6 @@ pub enum CypherValue {
     Integer(i64),
     String(String),
     Boolean(bool),
-    List(Vec<CypherValue>),
-    Map(HashMap<String, CypherValue>),
 }
 
 impl From<f64> for CypherValue {
@@ -232,19 +306,12 @@ impl FromStr for CypherValue {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match all_consuming(cypher_value)(s).finish() {
-            Ok((_remainder, cypher_value)) => Ok(cypher_value),
+            Ok((_remainder, value)) => Ok(value),
             Err(Error { input, code }) => Err(Error {
                 input: input.to_string(),
                 code,
             }),
         }
-    }
-}
-
-impl<T: Into<CypherValue>> From<Vec<T>> for CypherValue {
-    fn from(value: Vec<T>) -> Self {
-        let vector = value.into_iter().map(|entry| entry.into()).collect();
-        CypherValue::List(vector)
     }
 }
 
@@ -255,40 +322,7 @@ impl fmt::Display for CypherValue {
             CypherValue::Integer(integer) => write!(f, "{}", integer),
             CypherValue::String(string) => f.pad(string),
             CypherValue::Boolean(boolean) => write!(f, "{}", boolean),
-            CypherValue::List(list) => write_list(f, list),
-            CypherValue::Map(value) => write_map(f, value),
         }
-    }
-}
-
-fn write_list(formatter: &mut fmt::Formatter, list: &[CypherValue]) -> fmt::Result {
-    let values = list
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    write!(formatter, "[{}]", values)
-}
-
-fn write_map(formatter: &mut fmt::Formatter, map: &HashMap<String, CypherValue>) -> fmt::Result {
-    let values = map
-        .iter()
-        .map(|(key, value)| format!("{}:{}", key, value.to_string()))
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    write!(formatter, "{{{}}}", values)
-}
-
-impl<T: Into<CypherValue>> From<HashMap<String, T>> for CypherValue {
-    fn from(value: HashMap<String, T>) -> Self {
-        let map = value
-            .into_iter()
-            .map(|(key, value)| (key, value.into()))
-            .collect();
-
-        CypherValue::Map(map)
     }
 }
 
@@ -363,15 +397,15 @@ fn boolean_literal(input: &str) -> IResult<&str, CypherValue> {
     ))(input)
 }
 
-fn list_literal(input: &str) -> IResult<&str, CypherValue> {
+pub(crate) fn list_expression(input: &str) -> IResult<&str, Expression> {
     context(
         "list",
         preceded(
             char('['),
             cut(terminated(
                 map(
-                    separated_list0(preceded(sp, char(',')), literal),
-                    CypherValue::List,
+                    separated_list0(preceded(sp, char(',')), expression),
+                    Expression::List,
                 ),
                 preceded(sp, char(']')),
             )),
@@ -379,8 +413,20 @@ fn list_literal(input: &str) -> IResult<&str, CypherValue> {
     )(input)
 }
 
-fn map_literal(input: &str) -> IResult<&str, CypherValue> {
-    map(properties, CypherValue::Map)(input)
+pub(crate) fn map_expression(input: &str) -> IResult<&str, Expression> {
+    map(properties, Expression::Map)(input)
+}
+
+fn expression(input: &str) -> IResult<&str, Expression> {
+    preceded(
+        sp,
+        alt((
+            cypher_value_expression,
+            function_call_expression,
+            list_expression,
+            map_expression,
+        )),
+    )(input)
 }
 
 fn literal(input: &str) -> IResult<&str, CypherValue> {
@@ -391,14 +437,16 @@ fn literal(input: &str) -> IResult<&str, CypherValue> {
             integer_literal,
             string_literal,
             boolean_literal,
-            list_literal,
-            map_literal,
         )),
     )(input)
 }
 
 fn cypher_value(input: &str) -> IResult<&str, CypherValue> {
     preceded(sp, literal)(input)
+}
+
+fn cypher_value_expression(input: &str) -> IResult<&str, Expression> {
+    map(cypher_value, Expression::Literal)(input)
 }
 
 fn variable(input: &str) -> IResult<&str, String> {
@@ -414,14 +462,11 @@ fn variable(input: &str) -> IResult<&str, String> {
     )(input)
 }
 
-fn key_value_pair(input: &str) -> IResult<&str, (String, CypherValue)> {
-    pair(
-        variable,
-        preceded(preceded(sp, tag(":")), cut(cypher_value)),
-    )(input)
+fn key_value_pair(input: &str) -> IResult<&str, (String, Expression)> {
+    pair(variable, preceded(preceded(sp, tag(":")), cut(expression)))(input)
 }
 
-fn key_value_pairs(input: &str) -> IResult<&str, HashMap<String, CypherValue>> {
+fn key_value_pairs(input: &str) -> IResult<&str, HashMap<String, Expression>> {
     map(
         pair(
             key_value_pair,
@@ -431,7 +476,7 @@ fn key_value_pairs(input: &str) -> IResult<&str, HashMap<String, CypherValue>> {
     )(input)
 }
 
-fn properties(input: &str) -> IResult<&str, HashMap<String, CypherValue>> {
+fn properties(input: &str) -> IResult<&str, HashMap<String, Expression>> {
     map(
         delimited(
             preceded(sp, tag("{")),
@@ -481,9 +526,9 @@ fn block_comment(input: &str) -> IResult<&str, ()> {
 }
 
 type NodeBody = (
-    Option<String>,                       // variable
-    Vec<String>,                          // labels
-    Option<HashMap<String, CypherValue>>, // properties
+    Option<String>,                      // variable
+    Vec<String>,                         // labels
+    Option<HashMap<String, Expression>>, // properties
 );
 
 fn node_body(input: &str) -> IResult<&str, NodeBody> {
@@ -499,9 +544,9 @@ pub(crate) fn node(input: &str) -> IResult<&str, Node> {
 }
 
 type RelationshipBody = (
-    Option<String>,                       // variable
-    Option<String>,                       // relationship type
-    Option<HashMap<String, CypherValue>>, // properties
+    Option<String>,                      // variable
+    Option<String>,                      // relationship type
+    Option<HashMap<String, Expression>>, // properties
 );
 
 fn relationship_body(input: &str) -> IResult<&str, RelationshipBody> {
@@ -540,28 +585,28 @@ pub(crate) fn relationship(input: &str) -> IResult<&str, Relationship> {
 }
 
 #[derive(Debug, PartialEq)]
-pub(crate) struct Function {
-    pub(crate) name: String,
-    pub(crate) arguments: Vec<CypherValue>,
+pub struct FunctionCall {
+    pub name: String,
+    pub arguments: Vec<Expression>,
 }
 
-impl Function {
-    fn new(name: String, arguments: Vec<CypherValue>) -> Function {
-        Function { name, arguments }
+impl FunctionCall {
+    fn new(name: String, arguments: Vec<Expression>) -> FunctionCall {
+        FunctionCall { name, arguments }
     }
 }
 
-impl From<(String, Vec<CypherValue>)> for Function {
-    fn from((name, arguments): (String, Vec<CypherValue>)) -> Self {
-        Function { name, arguments }
+impl From<(String, Vec<Expression>)> for FunctionCall {
+    fn from((name, arguments): (String, Vec<Expression>)) -> Self {
+        FunctionCall { name, arguments }
     }
 }
 
-impl FromStr for Function {
+impl FromStr for FunctionCall {
     type Err = Error<String>;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match all_consuming(function)(s).finish() {
+        match all_consuming(function_call)(s).finish() {
             Ok((_remaining, function)) => Ok(function),
             Err(Error { input, code }) => Err(Error {
                 input: input.to_string(),
@@ -571,14 +616,31 @@ impl FromStr for Function {
     }
 }
 
-fn function(input: &str) -> IResult<&str, Function> {
+impl fmt::Display for FunctionCall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> fmt::Result {
+        let values = self
+            .arguments
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        write!(formatter, "{}({})", self.name, values)
+    }
+}
+
+fn function_call(input: &str) -> IResult<&str, FunctionCall> {
     map(
         tuple((
             function_name,
             delimited(tag("("), function_arguments, tag(")")),
         )),
-        Function::from,
+        FunctionCall::from,
     )(input)
+}
+
+fn function_call_expression(input: &str) -> IResult<&str, Expression> {
+    map(function_call, Expression::FunctionCall)(input)
 }
 
 fn function_name(input: &str) -> IResult<&str, String> {
@@ -594,8 +656,8 @@ fn function_name(input: &str) -> IResult<&str, String> {
     )(input)
 }
 
-fn function_arguments(input: &str) -> IResult<&str, Vec<CypherValue>> {
-    separated_list0(preceded(sp, char(',')), literal)(input)
+fn function_arguments(input: &str) -> IResult<&str, Vec<Expression>> {
+    separated_list0(preceded(sp, char(',')), expression)(input)
 }
 
 pub(crate) fn path(input: &str) -> IResult<&str, Path> {
@@ -616,7 +678,6 @@ pub(crate) fn graph(input: &str) -> IResult<&str, Graph> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     use maplit::hashmap;
     use pretty_assertions::assert_eq as pretty_assert_eq;
     use test_case::test_case;
@@ -655,7 +716,7 @@ mod tests {
         fn from<I, T>(
             variable: impl Into<String>,
             labels: I,
-            properties: Vec<(T, CypherValue)>,
+            properties: Vec<(T, Expression)>,
         ) -> Self
         where
             I: IntoIterator<Item = T>,
@@ -707,7 +768,7 @@ mod tests {
             variable: impl Into<String>,
             rel_type: T,
             direction: Direction,
-            properties: Vec<(T, CypherValue)>,
+            properties: Vec<(T, Expression)>,
         ) -> Self
         where
             T: Into<String>,
@@ -747,11 +808,6 @@ mod tests {
     #[test_case(r#""foobar\"s""#,  CypherValue::from(r#"foobar\"s"#) ; "dq string: escaped")]
     #[test_case("true",            CypherValue::from(true)  ; "bool: true")]
     #[test_case("FALSE",           CypherValue::from(false) ; "bool: false")]
-    #[test_case("[1, -2, 3]",      CypherValue::from(vec![1, -2, 3])      ; "list: [1, -2, 3]")]
-    #[test_case("[1.0, 2.5, .1]",  CypherValue::from(vec![1.0, 2.5, 0.1]) ; "list: [1.0, 2.5, 0.1]")]
-    #[test_case("[true, false]",   CypherValue::from(vec![true, false])   ; "list: [true, false]")]
-    #[test_case(r#"["ab", "cd"]"#, CypherValue::from(vec!["ab", "cd"])    ; "list: [\"ab\", \"cd\"]")]
-    #[test_case("{key: 1}", CypherValue::from(hashmap!["key".to_string() => 1]); "map: {\"key\", 1}")]
     fn cypher_value(input: &str, expected: CypherValue) {
         assert_eq!(input.parse(), Ok(expected))
     }
@@ -762,17 +818,37 @@ mod tests {
         assert_eq!(CypherValue::from(13.37), CypherValue::from(13.37));
         assert_eq!(CypherValue::from("foobar"), CypherValue::from("foobar"));
         assert_eq!(CypherValue::from(true), CypherValue::from(true));
+    }
+
+    #[test_case("[1, 2]", Expression::List(vec![Expression::Literal(CypherValue::Integer(1)), Expression::Literal(CypherValue::Integer(2))]); "list: [\"ab\", \"cd\"]")]
+    #[test_case("[true, false]", Expression::List(vec![Expression::Literal(CypherValue::Boolean(true)), Expression::Literal(CypherValue::Boolean(false))])   ; "list: [true, false]")]
+    #[test_case("{key: 1}", Expression::Map(hashmap!["key".to_string() => Expression::Literal(CypherValue::Integer(1))]); "map: {\"key\", 1}")]
+    fn test_expression(input: &str, expected: Expression) {
+        assert_eq!(input.parse(), Ok(expected))
+    }
+
+    #[test]
+    fn expression_from() {
         assert_eq!(
-            CypherValue::from(vec![1, -2, 3]),
-            CypherValue::List(vec![
+            Expression::List(vec![
+                Expression::Literal(CypherValue::Integer(1)),
+                Expression::Literal(CypherValue::Integer(-2)),
+                Expression::Literal(CypherValue::Integer(3))
+            ]),
+            Expression::from(vec![
                 CypherValue::Integer(1),
                 CypherValue::Integer(-2),
                 CypherValue::Integer(3)
             ])
         );
+
         assert_eq!(
-            CypherValue::from(hashmap!["key".to_string() => "value".to_string()]),
-            CypherValue::Map(hashmap!["key".to_string() => CypherValue::from("value")])
+            Expression::Map(
+                hashmap!["key".to_string() => Expression::Literal(CypherValue::from("value"))]
+            ),
+            Expression::from(
+                hashmap!["key".to_string() => CypherValue::String("value".to_string())]
+            ),
         );
     }
 
@@ -789,41 +865,34 @@ mod tests {
             format!("{:0>8}", CypherValue::String("foobar".to_string()))
         );
         assert_eq!("true", format!("{}", CypherValue::Boolean(true)));
-        assert_eq!(
-            "[1, 2]",
-            format!(
-                "{}",
-                CypherValue::List(vec![CypherValue::Integer(1), CypherValue::Integer(2)])
-            )
-        );
     }
 
     #[test]
-    fn list_display_test() {
-        let list = CypherValue::List(vec![
-            CypherValue::Float(13.37),
-            CypherValue::Integer(42),
-            CypherValue::Boolean(true),
-            CypherValue::String(String::from("foobar")),
+    fn expression_display() {
+        let list = Expression::List(vec![
+            Expression::Literal(CypherValue::Float(13.37)),
+            Expression::Literal(CypherValue::Integer(42)),
+            Expression::Literal(CypherValue::Boolean(true)),
+            Expression::Literal(CypherValue::String(String::from("foobar"))),
         ]);
 
         assert_eq!(format!("{}", list), "[13.37, 42, true, foobar]");
     }
 
-    #[test_case("key:42",         ("key".to_string(), CypherValue::from(42)))]
-    #[test_case("key: 1337",      ("key".to_string(), CypherValue::from(1337)))]
-    #[test_case("key2: 1337",     ("key2".to_string(), CypherValue::from(1337)))]
-    #[test_case("key2: 'foobar'", ("key2".to_string(), CypherValue::from("foobar")))]
-    #[test_case("key3: true",     ("key3".to_string(), CypherValue::from(true)))]
-    fn key_value_pair_test(input: &str, expected: (String, CypherValue)) {
+    #[test_case("key:42",         ("key".to_string(), Expression::Literal(CypherValue::from(42))))]
+    #[test_case("key: 1337",      ("key".to_string(), Expression::Literal(CypherValue::from(1337))))]
+    #[test_case("key2: 1337",     ("key2".to_string(), Expression::Literal(CypherValue::from(1337))))]
+    #[test_case("key2: 'foobar'", ("key2".to_string(), Expression::Literal(CypherValue::from("foobar"))))]
+    #[test_case("key3: true",     ("key3".to_string(), Expression::Literal(CypherValue::from(true))))]
+    fn key_value_pair_test(input: &str, expected: (String, Expression)) {
         assert_eq!(key_value_pair(input).unwrap().1, expected)
     }
 
-    #[test_case("{key1: 42}",               vec![("key1".to_string(), CypherValue::from(42))])]
-    #[test_case("{key1: 13.37 }",           vec![("key1".to_string(), CypherValue::from(13.37))])]
-    #[test_case("{ key1: 42, key2: 1337 }", vec![("key1".to_string(), CypherValue::from(42)), ("key2".to_string(), CypherValue::from(1337))])]
-    #[test_case("{ key1: 42, key2: 1337, key3: 'foobar' }", vec![("key1".to_string(), CypherValue::from(42)), ("key2".to_string(), CypherValue::from(1337)), ("key3".to_string(), CypherValue::from("foobar"))])]
-    fn properties_test(input: &str, expected: Vec<(String, CypherValue)>) {
+    #[test_case("{key1: 42}",               vec![("key1".to_string(), Expression::Literal(CypherValue::from(42)))])]
+    #[test_case("{key1: 13.37 }",           vec![("key1".to_string(), Expression::Literal(CypherValue::from(13.37)))])]
+    #[test_case("{ key1: 42, key2: 1337 }", vec![("key1".to_string(), Expression::Literal(CypherValue::from(42))), ("key2".to_string(), Expression::Literal(CypherValue::from(1337)))])]
+    #[test_case("{ key1: 42, key2: 1337, key3: 'foobar' }", vec![("key1".to_string(), Expression::Literal(CypherValue::from(42))), ("key2".to_string(), Expression::Literal(CypherValue::from(1337))), ("key3".to_string(), Expression::Literal(CypherValue::from("foobar")))])]
+    fn properties_test(input: &str, expected: Vec<(String, Expression)>) {
         let expected = expected.into_iter().collect::<HashMap<_, _>>();
         assert_eq!(properties(input).unwrap().1, expected)
     }
@@ -889,10 +958,11 @@ mod tests {
     #[test_case("(n0:A)",               Node::with_variable_and_labels("n0", vec!["A"]))]
     #[test_case("(n0:A:B)",             Node::with_variable_and_labels("n0", vec!["A", "B"]))]
     #[test_case("( n0:A:B )",           Node::with_variable_and_labels("n0", vec!["A", "B"]); "n0:A:B with space")]
-    #[test_case("(n0 { foo: 42 })",     Node::from("n0", vec![], vec![("foo", CypherValue::from(42))]))]
-    #[test_case("(n0:A:B { foo: 42 })", Node::from("n0", vec!["A", "B"], vec![("foo", CypherValue::from(42))]))]
-    #[test_case("(n:A { foo: 42, env: { var: 1 } })", Node::from("n", vec!["A"], vec![("foo", CypherValue::Integer(42)), ("env", CypherValue::Map(hashmap!["var".to_string() => CypherValue::Integer(1)]))]))]
-    fn node_test(input: &str, expected: Node) {
+    #[test_case("(n0 { foo: 42 })",     Node::from("n0", vec![], vec![("foo", Expression::Literal(CypherValue::from(42)))]))]
+    #[test_case("(n0:A:B { foo: 42 })", Node::from("n0", vec!["A", "B"], vec![("foo", Expression::Literal(CypherValue::from(42)))]))]
+    #[test_case("(n:A { foo: 42, env: { var: 1 } })", Node::from("n", vec!["A"], vec![("foo", Expression::Literal(CypherValue::Integer(42))), ("env", Expression::Map(hashmap!["var".to_string() => Expression::Literal(CypherValue::Integer(1))]))]))]
+    #[test_case(r#"(p:Process { name: "prog", env: include("env.cql") })"#, Node::from("p", vec!["Process"], vec![("name", Expression::Literal(CypherValue::String("prog".to_string()))), ("env", Expression::FunctionCall(FunctionCall{name: "include".to_string(), arguments: vec![Expression::Literal(CypherValue::String("env.cql".to_string()))]}))]))]
+    fn test_node(input: &str, expected: Node) {
         assert_eq!(input.parse(), Ok(expected));
     }
 
@@ -921,10 +991,10 @@ mod tests {
     #[test_case("-[ r0:BAR ]->",           Relationship { variable: Some("r0".to_string()), rel_type: Some("BAR".to_string()), direction: Direction::Outgoing, ..Relationship::default()};  "r0:Bar outgoing with space")]
     #[test_case("<-[r0:BAR]-",             Relationship { variable: Some("r0".to_string()), rel_type: Some("BAR".to_string()), direction: Direction::Incoming, ..Relationship::default() }; "r0:Bar incoming")]
     #[test_case("<-[ r0:BAR ]-",           Relationship { variable: Some("r0".to_string()), rel_type: Some("BAR".to_string()), direction: Direction::Incoming, ..Relationship::default() }; "r0:Bar incoming with space")]
-    #[test_case("<-[{ foo: 42 }]-",        Relationship { variable: None, rel_type: None, direction: Direction::Incoming, properties: std::iter::once(("foo".to_string(), CypherValue::from(42))).into_iter().collect::<HashMap<_,_>>() }; "with properties")]
-    #[test_case("<-[r0 { foo: 42 }]-",     Relationship { variable: Some("r0".to_string()), rel_type: None, direction: Direction::Incoming, properties: std::iter::once(("foo".to_string(), CypherValue::from(42))).into_iter().collect::<HashMap<_,_>>() }; "r0 with properties")]
-    #[test_case("<-[:BAR { foo: 42 }]-",   Relationship { variable: None, rel_type: Some("BAR".to_string()), direction: Direction::Incoming, properties: std::iter::once(("foo".to_string(), CypherValue::from(42))).into_iter().collect::<HashMap<_,_>>() }; "Bar with properties")]
-    #[test_case("<-[r0:BAR { foo: 42 }]-", Relationship { variable: Some("r0".to_string()), rel_type: Some("BAR".to_string()), direction: Direction::Incoming, properties: std::iter::once(("foo".to_string(), CypherValue::from(42))).into_iter().collect::<HashMap<_,_>>() }; "r0:Bar with properties")]
+    #[test_case("<-[{ foo: 42 }]-",        Relationship { variable: None, rel_type: None, direction: Direction::Incoming, properties: hashmap!["foo".to_string() => Expression::Literal(CypherValue::from(42))] }; "with properties")]
+    #[test_case("<-[r0 { foo: 42 }]-",     Relationship { variable: Some("r0".to_string()), rel_type: None, direction: Direction::Incoming, properties: hashmap!["foo".to_string() => Expression::Literal(CypherValue::from(42))] }; "r0 with properties")]
+    #[test_case("<-[:BAR { foo: 42 }]-",   Relationship { variable: None, rel_type: Some("BAR".to_string()), direction: Direction::Incoming, properties: hashmap!["foo".to_string() => Expression::Literal(CypherValue::from(42))] }; "Bar with properties")]
+    #[test_case("<-[r0:BAR { foo: 42 }]-", Relationship { variable: Some("r0".to_string()), rel_type: Some("BAR".to_string()), direction: Direction::Incoming, properties: hashmap!["foo".to_string() => Expression::Literal(CypherValue::from(42))] }; "r0:Bar with properties")]
     fn relationship_test(input: &str, expected: Relationship) {
         assert_eq!(input.parse(), Ok(expected));
     }
@@ -1080,9 +1150,9 @@ mod tests {
         );
     }
 
-    #[test_case("timestamp()", Function::new("timestamp".to_string(), Vec::new()))]
-    #[test_case("func('var', true, 1.0, 4)", Function::new("func".to_string(), vec![CypherValue::from("var"), CypherValue::from(true), CypherValue::from(1.0), CypherValue::from(4)]))]
-    fn function_test(input: &str, expected: Function) {
+    #[test_case("timestamp()", FunctionCall::new("timestamp".to_string(), Vec::new()))]
+    #[test_case("func('var', true, 1.0, 4)", FunctionCall::new("func".to_string(), vec![Expression::Literal(CypherValue::from("var")), Expression::Literal(CypherValue::from(true)), Expression::Literal(CypherValue::from(1.0)), Expression::Literal(CypherValue::from(4))]))]
+    fn test_function_call(input: &str, expected: FunctionCall) {
         assert_eq!(input.parse(), Ok(expected));
     }
 }
